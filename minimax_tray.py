@@ -321,6 +321,8 @@ class FloatWidget:
         # 允许用户拖拽自定义位置
         self._custom_x = None
         self._custom_y = None
+        self._running = False          # mainloop 是否正在运行
+        self._closed = threading.Event()  # 用于等待窗口完全关闭
 
     def _get_taskbar_height(self) -> int:
         """获取 Windows 任务栏高度"""
@@ -365,7 +367,7 @@ class FloatWidget:
         t.start()
 
     def hide(self):
-        """安全关闭窗口，防止 mainloop 冲突"""
+        """安全关闭窗口，等待 mainloop 退出"""
         self._visible = False
         root = self.root
         if root:
@@ -374,6 +376,10 @@ class FloatWidget:
                 root.quit()
             except Exception:
                 pass
+        # 等待 mainloop 线程结束（最多 2 秒）
+        self._closed.wait(timeout=2.0)
+        # 再安全 destroy
+        if root:
             try:
                 root.destroy()
             except Exception:
@@ -387,6 +393,8 @@ class FloatWidget:
 
     def _run(self):
         self._visible = True
+        self._running = True
+        self._closed.clear()
         self.root = tk.Tk()
         root = self.root
 
@@ -432,7 +440,9 @@ class FloatWidget:
         except Exception:
             pass
         self._visible = False
+        self._running = False
         self.root = None
+        self._closed.set()              # 通知 hide() mainloop 已退出
 
     def _build_ui(self, root):
         """构建小组件 UI"""
@@ -623,6 +633,8 @@ class FloatWidget:
         self.app.config["widget_mode"] = "compact"
         save_config(self.app.config)
         self.hide()
+        # 等待旧窗口完全关闭后再启动新模式，避免 Tk 实例冲突
+        _time.sleep(0.3)
         self.app.compact_widget.show()
 
 
@@ -631,7 +643,7 @@ class FloatWidget:
 class CompactFloatWidget:
     """
     精简版小组件：更矮、更紧凑，固定在任务栏托盘区域左侧
-    单行显示 5H余量 | 周余量，不可拖拽，固定位置
+    单行显示 5H余量 | 周余量，支持拖拽移动位置
     """
 
     WIDGET_W = 230
@@ -643,6 +655,11 @@ class CompactFloatWidget:
         self.app = app
         self.root = None
         self._visible = False
+        self._running = False
+        self._closed = threading.Event()
+        self._drag_start = None
+        self._custom_x = None
+        self._custom_y = None
 
     def _get_taskbar_height(self) -> int:
         try:
@@ -674,6 +691,8 @@ class CompactFloatWidget:
             pass
 
     def _calc_position(self):
+        if self._custom_x is not None and self._custom_y is not None:
+            return self._custom_x, self._custom_y
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
         tb_h = self._get_taskbar_height()
@@ -690,15 +709,18 @@ class CompactFloatWidget:
         t.start()
 
     def hide(self):
-        """安全关闭窗口，防止 mainloop 冲突"""
+        """安全关闭窗口，等待 mainloop 退出"""
         self._visible = False
         root = self.root
         if root:
-            self.root = None          # 先置空，防止其他线程访问
+            self.root = None
             try:
                 root.quit()
             except Exception:
                 pass
+        # 等待 mainloop 线程结束（最多 2 秒）
+        self._closed.wait(timeout=2.0)
+        if root:
             try:
                 root.destroy()
             except Exception:
@@ -712,6 +734,8 @@ class CompactFloatWidget:
 
     def _run(self):
         self._visible = True
+        self._running = True
+        self._closed.clear()
         self.root = tk.Tk()
         root = self.root
 
@@ -740,12 +764,13 @@ class CompactFloatWidget:
         self._build_ui(root)
         self.update_data()
 
-        # 定时重新定位（应对任务栏大小变化、DPI变化等）
+        # 定时重新定位
         root.after(5000, self._periodic_reposition)
 
-        # 禁止拖拽：拦截鼠标左键
-        root.bind("<ButtonPress-1>",   lambda e: None)
-        root.bind("<B1-Motion>",       lambda e: None)
+        # 拖拽支持
+        root.bind("<ButtonPress-1>",   self._on_drag_start)
+        root.bind("<B1-Motion>",       self._on_drag_motion)
+        root.bind("<ButtonRelease-1>", self._on_drag_end)
         # 右键菜单
         root.bind("<Button-3>", self._on_right_click)
 
@@ -757,7 +782,28 @@ class CompactFloatWidget:
         except Exception:
             pass
         self._visible = False
+        self._running = False
         self.root = None
+        self._closed.set()
+
+    def _on_drag_start(self, e):
+        self._drag_start = (e.x_root, e.y_root,
+                            self.root.winfo_x(), self.root.winfo_y())
+
+    def _on_drag_motion(self, e):
+        if self._drag_start is None:
+            return
+        sx, sy, ox, oy = self._drag_start
+        dx, dy = e.x_root - sx, e.y_root - sy
+        nx, ny = ox + dx, oy + dy
+        self.root.geometry(f"+{nx}+{ny}")
+
+    def _on_drag_end(self, e):
+        if self._drag_start is not None:
+            ox, oy = self.root.winfo_x(), self.root.winfo_y()
+            self._custom_x = ox
+            self._custom_y = oy
+        self._drag_start = None
 
     def _periodic_reposition(self):
         """每30秒检查并重新定位"""
@@ -847,6 +893,8 @@ class CompactFloatWidget:
         menu.add_command(label="🔄 立即刷新", command=self._refresh)
         menu.add_command(label="📊 详细用量", command=lambda: self.app._show_detail_window())
         menu.add_separator()
+        menu.add_command(label="📌 恢复默认位置", command=self._reset_position)
+        menu.add_separator()
         menu.add_command(label="切换标准模式", command=self._switch_to_standard)
         menu.add_separator()
         menu.add_command(label="✕ 隐藏组件", command=self.hide)
@@ -856,11 +904,20 @@ class CompactFloatWidget:
         t = threading.Thread(target=self.app._do_fetch, daemon=True)
         t.start()
 
+    def _reset_position(self):
+        self._custom_x = None
+        self._custom_y = None
+        if self.root:
+            x, y = self._calc_position()
+            self.root.geometry(f"{self.WIDGET_W}x{self.WIDGET_H}+{x}+{y}")
+
     def _switch_to_standard(self):
         """切换到标准模式"""
         self.app.config["widget_mode"] = "standard"
         save_config(self.app.config)
         self.hide()
+        # 等待旧窗口完全关闭后再启动新模式
+        _time.sleep(0.3)
         self.app.widget.show()
 
 
