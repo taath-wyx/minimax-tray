@@ -365,14 +365,19 @@ class FloatWidget:
         t.start()
 
     def hide(self):
+        """安全关闭窗口，防止 mainloop 冲突"""
         self._visible = False
-        if self.root:
+        root = self.root
+        if root:
+            self.root = None          # 先置空，防止其他线程访问
             try:
-                self.root.quit()
-                self.root.destroy()
+                root.quit()
             except Exception:
                 pass
-            self.root = None
+            try:
+                root.destroy()
+            except Exception:
+                pass
 
     def toggle(self):
         if self._visible and self.root and self.root.winfo_exists():
@@ -419,7 +424,13 @@ class FloatWidget:
         # 右键菜单
         root.bind("<Button-3>", self._on_right_click)
 
-        root.mainloop()
+        # 捕获窗口关闭协议
+        root.protocol("WM_DELETE_WINDOW", self.hide)
+
+        try:
+            root.mainloop()
+        except Exception:
+            pass
         self._visible = False
         self.root = None
 
@@ -679,14 +690,19 @@ class CompactFloatWidget:
         t.start()
 
     def hide(self):
+        """安全关闭窗口，防止 mainloop 冲突"""
         self._visible = False
-        if self.root:
+        root = self.root
+        if root:
+            self.root = None          # 先置空，防止其他线程访问
             try:
-                self.root.quit()
-                self.root.destroy()
+                root.quit()
             except Exception:
                 pass
-            self.root = None
+            try:
+                root.destroy()
+            except Exception:
+                pass
 
     def toggle(self):
         if self._visible and self.root and self.root.winfo_exists():
@@ -727,10 +743,19 @@ class CompactFloatWidget:
         # 定时重新定位（应对任务栏大小变化、DPI变化等）
         root.after(5000, self._periodic_reposition)
 
+        # 禁止拖拽：拦截鼠标左键
+        root.bind("<ButtonPress-1>",   lambda e: None)
+        root.bind("<B1-Motion>",       lambda e: None)
         # 右键菜单
         root.bind("<Button-3>", self._on_right_click)
 
-        root.mainloop()
+        # 捕获窗口关闭协议
+        root.protocol("WM_DELETE_WINDOW", self.hide)
+
+        try:
+            root.mainloop()
+        except Exception:
+            pass
         self._visible = False
         self.root = None
 
